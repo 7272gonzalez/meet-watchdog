@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON=$(which python3 2>/dev/null || echo "")
 WATCHDOG="$HOME/.meet_watchdog.py"
 PLIST="$HOME/Library/LaunchAgents/com.user.meetwatchdog.plist"
-CREDENTIALS="$HOME/.meet_watchdog_credentials.json"
 LABEL="com.user.meetwatchdog"
 
 echo "Meet Watchdog Installer"
@@ -26,12 +25,6 @@ fi
 echo "Python:  $PYTHON ($($PYTHON --version 2>&1))"
 echo "User:    $USER"
 echo "Home:    $HOME"
-echo ""
-
-# Install required Python packages
-echo "Installing required Python packages..."
-$PYTHON -m pip install --quiet --user google-auth google-auth-oauthlib google-api-python-client
-echo "Packages installed."
 echo ""
 
 # Copy watchdog script
@@ -71,40 +64,18 @@ EOF
 echo "Installed plist  -> $PLIST"
 echo ""
 
-# Check for Google Calendar credentials
-if [ ! -f "$CREDENTIALS" ]; then
-    echo "---------------------------------------------------------------"
-    echo "IMPORTANT: Google Calendar credentials required before first use"
-    echo "---------------------------------------------------------------"
-    echo ""
-    echo "1. Go to https://console.cloud.google.com"
-    echo "2. Create a project, enable the Google Calendar API"
-    echo "3. Go to APIs & Services → Credentials"
-    echo "4. Create an OAuth 2.0 Client ID (Desktop app type)"
-    echo "5. Download the JSON file and save it to:"
-    echo "   $CREDENTIALS"
-    echo ""
-    echo "Then run: python3 ~/.meet_watchdog.py --setup"
-    echo ""
-    echo "The --setup command opens your browser to authorise Google Calendar"
-    echo "access. You only need to do this once."
-    echo "---------------------------------------------------------------"
-    echo ""
-else
-    # Credentials exist — run first-time auth if not already done
-    if [ ! -f "$HOME/.meet_watchdog_token.json" ]; then
-        echo "Credentials found. Running Google Calendar authentication..."
-        $PYTHON "$WATCHDOG" --setup
-        echo ""
-    fi
-fi
-
 # Unload existing instance if running
 launchctl unload "$PLIST" 2>/dev/null || true
 
 # Load the agent
 launchctl load "$PLIST"
 echo "Launch agent loaded and running."
+echo ""
+echo "NOTE: The watchdog reads events from macOS Calendar.app via AppleScript."
+echo "Make sure Calendar.app is syncing your Google Calendar (or whichever"
+echo "calendar contains your video call invites)."
+echo ""
+echo "To sync Google Calendar: open Calendar.app → Settings → Accounts → Add Account → Google"
 echo ""
 echo "Done! The watchdog will alert you every minute when a video call is active."
 echo ""

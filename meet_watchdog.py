@@ -2,7 +2,7 @@
 """
 meet_watchdog.py — Alerts when a video call is active but you haven't joined.
 Supports Google Meet, Zoom, and Microsoft Teams.
-Uses the Google Calendar API directly — no Calendar.app required.
+Uses macOS Calendar.app via AppleScript — no Google API credentials required.
 Runs every 60s via launchd.
 """
 
@@ -22,16 +22,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-STATE_FILE       = os.path.expanduser("~/.meet_watchdog_state.json")
-CREDENTIALS_FILE = os.path.expanduser("~/.meet_watchdog_credentials.json")
-TOKEN_FILE       = os.path.expanduser("~/.meet_watchdog_token.json")
-ALERT_SOUND      = "/System/Library/Sounds/Sosumi.aiff"
+STATE_FILE  = os.path.expanduser("~/.meet_watchdog_state.json")
+ALERT_SOUND = "/System/Library/Sounds/Sosumi.aiff"
 
 ALERT_BEFORE_MINUTES = 0   # 0 = alert at start time; increase for early warnings
 GRACE_PERIOD_MINUTES = 15  # stop watching this many minutes after start
 MAX_ALERTS           = 3   # give up after this many alerts per meeting
-
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 PLATFORM_PATTERNS = {
     "Meet":  re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}"),
@@ -40,107 +36,112 @@ PLATFORM_PATTERNS = {
 }
 
 
-# ── Google Calendar API ───────────────────────────────────────────────────────
+# ── Calendar.app via AppleScript ──────────────────────────────────────────────
 
-def get_calendar_service():
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
+def osascript(script: str) -> tuple[str, int]:
+    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    return r.stdout.strip(), r.returncode
 
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists(CREDENTIALS_FILE):
-                logging.error(
-                    "Credentials not found at %s. "
-                    "Run: python3 ~/.meet_watchdog.py --setup",
-                    CREDENTIALS_FILE,
-                )
-                sys.exit(1)
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+def relaunch_calendar():
+    """Force-quit and reopen Calendar.app to refresh its event data."""
+    osascript('tell application "Calendar" to quit')
+    import time
+    time.sleep(2)
+    osascript('tell application "Calendar" to launch')
+    time.sleep(3)
+    logging.info("Calendar.app relaunched to refresh events")
 
-    return build("calendar", "v3", credentials=creds)
+
+def ensure_calendar_running():
+    """Open Calendar.app if it is not already running."""
+    out, _ = osascript('tell application "Calendar" to return running')
+    if out.strip().lower() != "true":
+        osascript('tell application "Calendar" to launch')
+        import time
+        time.sleep(3)
+        logging.info("Calendar.app was not running — launched it")
 
 
 def get_active_events() -> list[tuple[str, str, str, int]]:
     """Return [(title, platform, url, secs_since_start)] for active meetings."""
-    try:
-        service = get_calendar_service()
-    except SystemExit:
-        raise
-    except Exception as e:
-        logging.error("Failed to connect to Google Calendar API: %s", e)
-        return []
+    ensure_calendar_running()
 
     now          = datetime.now(timezone.utc)
     window_start = now - timedelta(minutes=GRACE_PERIOD_MINUTES)
     window_end   = now + timedelta(minutes=ALERT_BEFORE_MINUTES, seconds=30)
 
+    # Format dates for AppleScript (local time, no timezone suffix)
+    def fmt(dt: datetime) -> str:
+        local = dt.astimezone()
+        return local.strftime("%B %d, %Y %H:%M:%S")
+
+    win_start_str = fmt(window_start)
+    win_end_str   = fmt(window_end)
+
+    script = f"""
+set winStart to date "{win_start_str}"
+set winEnd to date "{win_end_str}"
+set resultLines to {{}}
+tell application "Calendar"
+    repeat with aCal in calendars
+        set theEvents to (every event of aCal whose start date >= winStart and start date <= winEnd)
+        repeat with anEvent in theEvents
+            try
+                set evTitle to summary of anEvent
+                set evStart to start date of anEvent
+                set evURL to url of anEvent
+                if evURL is missing value then set evURL to ""
+                set evNotes to notes of anEvent
+                if evNotes is missing value then set evNotes to ""
+                set evLoc to location of anEvent
+                if evLoc is missing value then set evLoc to ""
+                set rawData to evURL & " " & evNotes & " " & evLoc
+                if rawData contains "meet.google.com" or rawData contains "zoom.us" or rawData contains "teams.microsoft.com" then
+                    set secsFromEpoch to (evStart - (date "January 1, 1970 00:00:00")) - (time to GMT)
+                    set resultLines to resultLines & {{evTitle & "|||" & rawData & "|||SECS~~" & secsFromEpoch}}
+                end if
+            end try
+        end repeat
+    end repeat
+end tell
+set AppleScript's text item delimiters to "\\n"
+set output to resultLines as text
+set AppleScript's text item delimiters to ""
+return output
+"""
+
+    out, rc = osascript(script)
+    if rc != 0 or not out.strip():
+        logging.info("No active video call events found in window")
+        return []
+
     seen_urls = set()
     events    = []
 
-    try:
-        cal_list = service.calendarList().list().execute()
-        for cal in cal_list.get("items", []):
-            try:
-                results = service.events().list(
-                    calendarId=cal["id"],
-                    timeMin=window_start.isoformat(),
-                    timeMax=window_end.isoformat(),
-                    singleEvents=True,
-                    orderBy="startTime",
-                ).execute()
+    for line in out.splitlines():
+        if "|||" not in line:
+            continue
+        try:
+            title_part, rest = line.split("|||", 1)
+            raw_part, secs_part = rest.split("|||SECS~~", 1)
+            title = title_part.strip()
+            raw   = raw_part.strip()
+            secs  = int(secs_part.strip())
+            secs_since_start = int((now - datetime.fromtimestamp(secs, tz=timezone.utc)).total_seconds())
+        except Exception as e:
+            logging.warning("Could not parse AppleScript line %r: %s", line, e)
+            continue
 
-                for event in results.get("items", []):
-                    # Skip events the user has declined
-                    is_declined = any(
-                        a.get("self") and a.get("responseStatus") == "declined"
-                        for a in event.get("attendees", [])
-                    )
-                    if is_declined:
-                        continue
-
-                    # Collect all text fields that might contain a call link
-                    raw = " ".join(filter(None, [
-                        event.get("hangoutLink", ""),
-                        event.get("location", ""),
-                        event.get("description", ""),
-                    ]))
-                    for ep in event.get("conferenceData", {}).get("entryPoints", []):
-                        raw += " " + ep.get("uri", "")
-
-                    for platform, pattern in PLATFORM_PATTERNS.items():
-                        urls = pattern.findall(raw)
-                        if urls:
-                            url = urls[0]
-                            if url in seen_urls:
-                                break  # same event on multiple calendars
-                            seen_urls.add(url)
-
-                            start_str = event["start"].get("dateTime") or event["start"].get("date")
-                            start_dt  = datetime.fromisoformat(start_str)
-                            if start_dt.tzinfo is None:
-                                start_dt = start_dt.replace(tzinfo=timezone.utc)
-                            secs  = int((now - start_dt).total_seconds())
-                            title = event.get("summary", "Untitled meeting")
-                            events.append((title, platform, url, secs))
-                            break
-
-            except Exception as e:
-                logging.warning("Error querying calendar %s: %s", cal.get("id"), e)
-
-    except Exception as e:
-        logging.error("Google Calendar API error: %s", e)
-        return []
+        for platform, pattern in PLATFORM_PATTERNS.items():
+            urls = pattern.findall(raw)
+            if urls:
+                url = urls[0]
+                if url in seen_urls:
+                    break
+                seen_urls.add(url)
+                events.append((title, platform, url, secs_since_start))
+                break
 
     if not events:
         logging.info("No active video call events found in window")
@@ -150,11 +151,6 @@ def get_active_events() -> list[tuple[str, str, str, int]]:
 
 
 # ── Chrome detection ──────────────────────────────────────────────────────────
-
-def osascript(script: str) -> tuple[str, int]:
-    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    return r.stdout.strip(), r.returncode
-
 
 def is_in_call(platform: str, url: str) -> bool:
     """Return True if Chrome has a tab open matching this meeting URL."""
@@ -216,29 +212,9 @@ def notify(title: str, body: str):
     subprocess.run(["afplay", ALERT_SOUND])
 
 
-# ── Setup & main ──────────────────────────────────────────────────────────────
-
-def setup():
-    """Run the one-time OAuth flow to authenticate with Google Calendar."""
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    if not os.path.exists(CREDENTIALS_FILE):
-        print(f"\nERROR: credentials file not found at:\n  {CREDENTIALS_FILE}\n")
-        print("Follow the setup instructions in README.md to create it.")
-        sys.exit(1)
-    print("Opening browser for Google Calendar authentication...")
-    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-    creds = flow.run_local_server(port=0)
-    with open(TOKEN_FILE, "w") as f:
-        f.write(creds.to_json())
-    print(f"\nAuthentication successful. Token saved to:\n  {TOKEN_FILE}\n")
-    print("Meet Watchdog is now authorised to read your Google Calendar.")
-
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    if "--setup" in sys.argv:
-        setup()
-        return
-
     events = get_active_events()
     if not events:
         sys.exit(0)
