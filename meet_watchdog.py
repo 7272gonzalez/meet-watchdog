@@ -1,6 +1,7 @@
 #!/usr/local/bin/python3
 """
-meet_watchdog.py — Alerts when a Google Meet is active but you haven't joined.
+meet_watchdog.py — Alerts when a video call is active but you haven't joined.
+Supports Google Meet, Zoom, and Microsoft Teams.
 Reads events from macOS Calendar.app (syncs Google Calendar automatically).
 Runs every 60s via launchd.
 """
@@ -11,7 +12,6 @@ import re
 import json
 import os
 import logging
-from datetime import datetime
 
 LOG_FILE = os.path.expanduser("~/.meet_watchdog.log")
 logging.basicConfig(
@@ -24,8 +24,14 @@ logging.basicConfig(
 STATE_FILE = os.path.expanduser("~/.meet_watchdog_state.json")
 ALERT_BEFORE_MINUTES = 2   # alert this many minutes before meeting starts
 GRACE_PERIOD_MINUTES = 15  # stop alerting this many minutes after start
-MAX_ALERTS = 3             # stop alerting after this many attempts per meeting
-MEET_PATTERN = re.compile(r'https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}')
+MAX_ALERTS = 3             # max alert attempts per meeting before giving up
+
+# URL patterns for each supported platform
+PLATFORM_PATTERNS = {
+    "Meet":  re.compile(r'https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}'),
+    "Zoom":  re.compile(r'https://(?:[\w-]+\.)?zoom\.us/j/[^\s"\'<>]+'),
+    "Teams": re.compile(r'https://teams\.microsoft\.com/l/meetup-join/[^\s"\'<>]+'),
+}
 
 
 def osascript(script: str) -> tuple[str, int]:
@@ -44,10 +50,11 @@ def ensure_calendar_running():
         import time; time.sleep(3)
 
 
-def get_active_meet_events() -> list[tuple[str, str]]:
-    """Return [(title, meet_url)] for meetings in the alert window right now."""
+def get_active_events() -> list[tuple[str, str, str, int]]:
+    """Return [(title, platform, url, secs_since_start)] for active meetings."""
     before_secs = ALERT_BEFORE_MINUTES * 60
     grace_secs = GRACE_PERIOD_MINUTES * 60
+    platform_keywords = "meet.google.com\" or rawData contains \"zoom.us\" or rawData contains \"teams.microsoft.com"
     script = f"""
 set output to ""
 set now to current date
@@ -69,8 +76,9 @@ tell application "Calendar"
                 try
                     set rawData to rawData & (description of ev) & " "
                 end try
-                if rawData contains "meet.google.com" then
-                    set output to output & evTitle & "|||" & rawData & "~~"
+                if rawData contains "{platform_keywords} then
+                    set secsSinceStart to (now - start date of ev) as integer
+                    set output to output & evTitle & "|||" & rawData & "|||" & secsSinceStart & "~~"
                 end if
             end repeat
         end try
@@ -84,29 +92,44 @@ return output
         logging.error("Calendar AppleScript failed (code %d): %s", code, output)
         return []
     logging.info("Calendar query returned: %r", output[:300] if output else "(empty)")
+
     events = []
     for chunk in output.split("~~"):
-        if "|||" not in chunk:
+        parts = chunk.split("|||")
+        if len(parts) != 3:
             continue
-        title, data = chunk.split("|||", 1)
-        urls = MEET_PATTERN.findall(data)
-        if urls:
-            events.append((title.strip(), urls[0]))
+        title, data, secs_str = parts
+        try:
+            secs_since_start = int(secs_str.strip())
+        except ValueError:
+            secs_since_start = 0
+        for platform, pattern in PLATFORM_PATTERNS.items():
+            urls = pattern.findall(data)
+            if urls:
+                events.append((title.strip(), platform, urls[0], secs_since_start))
+                break  # one platform per event
     if not events:
-        logging.info("No active Meet events found in window")
+        logging.info("No active video call events found in window")
     return events
 
 
-def is_in_meet(meet_url: str) -> bool:
-    """Return True if Chrome has a tab open with this Meet URL."""
-    code = meet_url.rstrip("/").split("/")[-1].split("?")[0]
+def is_in_call(platform: str, url: str) -> bool:
+    """Return True if Chrome has a tab open matching this meeting URL."""
+    if platform == "Meet":
+        identifier = url.rstrip("/").split("/")[-1].split("?")[0]
+    elif platform == "Zoom":
+        match = re.search(r'/j/(\d+)', url)
+        identifier = match.group(1) if match else "zoom.us/j"
+    else:  # Teams
+        identifier = "teams.microsoft.com/l/meetup-join"
+
     script = f"""
 set found to false
 try
     tell application "Google Chrome"
         repeat with w in windows
             repeat with t in tabs of w
-                if URL of t contains "{code}" then
+                if URL of t contains "{identifier}" then
                     set found to true
                 end if
             end repeat
@@ -132,28 +155,37 @@ def save_state(state: dict):
         json.dump(state, f)
 
 
-def notify(title: str, body: str):
+def time_context(secs_since_start: int) -> str:
+    mins = abs(secs_since_start) // 60
+    if secs_since_start < 0:
+        return f"starts in {mins} min" if mins > 0 else "starting now"
+    return f"started {mins} min ago" if mins > 0 else "just started"
+
+
+def notify(meeting_title: str, platform: str, secs_since_start: int):
+    title = f"Join your {platform} call!"
+    body = f"{meeting_title} — {time_context(secs_since_start)}"
     t = title.replace('"', '\\"')
     b = body.replace('"', '\\"')
     osascript(f'display notification "{b}" with title "{t}" sound name "Sosumi"')
 
 
 def main():
-    events = get_active_meet_events()
+    events = get_active_events()
     if not events:
         sys.exit(0)
 
     state = load_state()
     changed = False
 
-    for title, meet_url in events:
-        entry = state.get(meet_url, {})
+    for title, platform, url, secs_since_start in events:
+        entry = state.get(url, {})
 
         if entry == "attended":
             continue
 
-        if is_in_meet(meet_url):
-            state[meet_url] = "attended"
+        if is_in_call(platform, url):
+            state[url] = "attended"
             changed = True
             continue
 
@@ -162,10 +194,10 @@ def main():
             logging.info("Max alerts (%d) reached for: %s — giving up", MAX_ALERTS, title)
             continue
 
-        logging.info("Alerting (%d/%d) for: %s (%s)", alert_count + 1, MAX_ALERTS, title, meet_url)
-        notify("You're late to your Google Meet!", title)
-        subprocess.run(["open", meet_url])
-        state[meet_url] = {"alerts": alert_count + 1}
+        logging.info("Alerting (%d/%d) for: %s [%s] %s", alert_count + 1, MAX_ALERTS, title, platform, url)
+        notify(title, platform, secs_since_start)
+        subprocess.run(["open", url])
+        state[url] = {"alerts": alert_count + 1}
         changed = True
 
     if changed:

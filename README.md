@@ -1,14 +1,14 @@
 # Meet Watchdog
 
-A lightweight macOS background agent that detects when a Google Meet is active on your calendar and alerts you if you haven't joined. Runs every 60 seconds automatically, survives reboots, and gives up after a configurable number of alerts so it doesn't harass you if you intentionally skipped a meeting.
+A lightweight macOS background agent that detects when a video call is active on your calendar and alerts you if you haven't joined. Supports Google Meet, Zoom, and Microsoft Teams. Runs every 60 seconds automatically, survives reboots, and gives up after a configurable number of alerts so it doesn't harass you if you intentionally skipped a meeting.
 
 ---
 
 ## How it works
 
-1. Every 60 seconds, the script reads your macOS Calendar.app for meetings that have a Google Meet link and fall within the alert window (started recently or starting soon).
+1. Every 60 seconds, the script reads your macOS Calendar.app for meetings that have a Google Meet, Zoom, or Teams link and fall within the alert window (started recently or starting soon).
 2. It checks whether Google Chrome has a tab open with that meeting's URL.
-3. If no tab is found, it fires a macOS notification with a sound and opens the Meet link in Chrome.
+3. If no tab is found, it fires a macOS notification showing the meeting name and how many minutes ago it started, then opens the call link in Chrome.
 4. Once it detects you've joined (Chrome tab is open), it marks the meeting as attended and stops alerting.
 5. If you never join, it stops after `MAX_ALERTS` attempts (default: 3).
 
@@ -89,6 +89,7 @@ Common causes:
 - Your Google Calendar is not synced to macOS Calendar.app — go to System Settings → Internet Accounts and add your Google account with Calendar enabled.
 - The meeting invite does not contain a Google Meet link in the URL, location, or description fields.
 - macOS has not granted Calendar or Chrome automation permissions — go to System Settings → Privacy & Security → Automation and ensure Terminal (or whichever app runs the script) has access.
+- For Zoom or Teams meetings: the watchdog detects the call link by checking Chrome for the meeting URL. If you join via the native Zoom or Teams desktop app and Chrome no longer has the tab open, the script cannot detect you as joined — `MAX_ALERTS` will limit how long it keeps alerting.
 
 **It stopped alerting before I joined**
 
