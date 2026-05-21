@@ -6,7 +6,7 @@ A lightweight macOS background agent that detects when a video call is active on
 
 ## How it works
 
-1. Every 60 seconds, the script reads your macOS Calendar.app for meetings that have a Google Meet, Zoom, or Teams link and fall within the alert window (started recently or starting soon).
+1. Every 60 seconds, the script calls the Google Calendar API to check for meetings with a Google Meet, Zoom, or Teams link that fall within the alert window (started recently or starting soon).
 2. It checks whether Google Chrome has a tab open with that meeting's URL.
 3. If no tab is found, it fires a macOS notification showing the meeting name and how many minutes ago it started, then opens the call link in Chrome.
 4. Once it detects you've joined (Chrome tab is open), it marks the meeting as attended and stops alerting.
@@ -19,21 +19,36 @@ A lightweight macOS background agent that detects when a video call is active on
 - macOS 12 or later
 - Python 3 (`python3 --version` to check — install via [python.org](https://python.org) or `brew install python3`)
 - Google Chrome
-- Google Calendar synced to the macOS Calendar app (see setup steps below)
+- A Google account with Google Calendar
 
-## Syncing Google Calendar to macOS Calendar
+---
 
-Meet Watchdog reads your meetings from macOS Calendar.app, so your Google Calendar must be synced to it. You do not need to use Calendar.app day-to-day — it just needs to run in the background as a data source.
+## Google Calendar API Setup
 
-One-time setup:
+This is a one-time setup. The watchdog reads your calendar via the Google Calendar API, which requires OAuth2 credentials from Google Cloud.
 
-1. Open **System Settings → Internet Accounts**
-2. Click **Add Account** and select **Google**
-3. Sign in with your Google account
-4. Make sure **Calendars** is checked
-5. Click **Done**
+### Step 1 — Create credentials
 
-Calendar.app will now stay in sync with your Google Calendar automatically. The watchdog opens it in the background as needed — you do not need to keep it open yourself.
+1. Go to [console.cloud.google.com](https://console.cloud.google.com)
+2. Create a new project (top-left dropdown → **New Project**)
+3. Go to **APIs & Services → Library**, search for **Google Calendar API**, and click **Enable**
+4. Go to **APIs & Services → Credentials** → **Create Credentials → OAuth client ID**
+5. If prompted to configure the consent screen, choose **External**, fill in an app name (e.g. "Meet Watchdog"), and save
+6. For application type, select **Desktop app** and click **Create**
+7. Click **Download JSON** and save the file to:
+   ```
+   ~/.meet_watchdog_credentials.json
+   ```
+
+### Step 2 — Authorise access
+
+Run this once from Terminal to open a browser and grant Calendar access:
+
+```bash
+python3 ~/.meet_watchdog.py --setup
+```
+
+Sign in with your Google account and click **Allow**. A token is saved automatically and the watchdog uses it from then on. You will not need to do this again unless you revoke access.
 
 ---
 
@@ -44,14 +59,13 @@ bash meet_watchdog_install.sh
 ```
 
 The installer will:
-- Verify Python 3 is available
+- Install required Python packages (`google-auth`, `google-api-python-client`)
 - Copy `meet_watchdog.py` to `~/.meet_watchdog.py`
 - Create a launchd agent at `~/Library/LaunchAgents/com.user.meetwatchdog.plist`
+- Run first-time Google Calendar authentication if credentials are present
 - Start the agent immediately
 
-On first run, macOS will ask for two permissions — both are required:
-- **Calendar access** — to read your upcoming meetings
-- **Automation access for Google Chrome** — to check whether the Meet tab is open
+On first run, macOS will ask for permission to control Google Chrome — accept it.
 
 ---
 
@@ -61,7 +75,7 @@ On first run, macOS will ask for two permissions — both are required:
 bash meet_watchdog_uninstall.sh
 ```
 
-This stops the agent and removes all installed files.
+This stops the agent and removes all installed files. Your `credentials.json` is kept in case you reinstall — delete it manually to fully revoke access.
 
 ---
 
@@ -108,18 +122,24 @@ cat ~/.meet_watchdog.log
 ```
 
 Common causes:
-- Your Google Calendar is not synced to macOS Calendar.app — go to System Settings → Internet Accounts and add your Google account with Calendar enabled.
-- The meeting invite does not contain a Google Meet link in the URL, location, or description fields.
-- macOS has not granted Calendar or Chrome automation permissions — go to System Settings → Privacy & Security → Automation and ensure Terminal (or whichever app runs the script) has access.
-- For Zoom or Teams meetings: the watchdog detects the call link by checking Chrome for the meeting URL. If you join via the native Zoom or Teams desktop app and Chrome no longer has the tab open, the script cannot detect you as joined — `MAX_ALERTS` will limit how long it keeps alerting.
+- Google Calendar credentials or token are missing — run `python3 ~/.meet_watchdog.py --setup`
+- The meeting invite does not contain a Google Meet, Zoom, or Teams link
+- macOS has not granted Chrome automation permissions — go to System Settings → Privacy & Security → Automation and ensure Terminal has access
 
 **It stopped alerting before I joined**
 
-Either `MAX_ALERTS` was reached or the Chrome tab was briefly detected as open (e.g. the Meet link was opened but you closed the tab before the script ran again). The state is stored in `~/.meet_watchdog_state.json` — you can delete that file to reset all meeting history.
+Either `MAX_ALERTS` was reached, or the Chrome tab was briefly detected as open. The state is stored in `~/.meet_watchdog_state.json` — delete that file to reset all meeting history.
 
-**Calendar.app keeps opening**
+**For Zoom or Teams meetings**
 
-The script launches Calendar.app in the background when it is closed so it can query your events. Calendar.app is required to be running; if you prefer not to see it in your Dock, you can right-click its Dock icon and uncheck "Keep in Dock".
+The watchdog detects the call link by checking Chrome for the meeting URL. If you join via the native Zoom or Teams desktop app and Chrome no longer has the tab open, the script cannot detect you as joined — `MAX_ALERTS` will limit how long it keeps alerting.
+
+**Google token expired**
+
+If the log shows an authentication error, re-run the setup:
+```bash
+python3 ~/.meet_watchdog.py --setup
+```
 
 ---
 
@@ -129,5 +149,7 @@ The script launches Calendar.app in the background when it is closed so it can q
 |------|----------|---------|
 | `meet_watchdog.py` | `~/.meet_watchdog.py` | Main script |
 | `com.user.meetwatchdog.plist` | `~/Library/LaunchAgents/` | launchd config — runs the script every 60s |
+| `credentials.json` | `~/.meet_watchdog_credentials.json` | Google OAuth2 client credentials |
+| `token.json` | `~/.meet_watchdog_token.json` | Auto-generated auth token (do not share) |
 | `.meet_watchdog.log` | `~/` | Log output for debugging |
 | `.meet_watchdog_state.json` | `~/` | Tracks alert counts and attended meetings |
