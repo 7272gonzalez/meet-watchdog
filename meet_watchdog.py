@@ -39,6 +39,15 @@ def osascript(script: str) -> tuple[str, int]:
     return r.stdout.strip(), r.returncode
 
 
+def relaunch_calendar():
+    """Force-quit Calendar if running, then reopen it and wait for it to be ready."""
+    import time
+    osascript('tell application "Calendar" to quit')
+    time.sleep(1)
+    subprocess.run(["open", "-a", "Calendar"])
+    time.sleep(5)
+
+
 def ensure_calendar_running():
     """Launch Calendar.app in the background if it isn't already open."""
     result = subprocess.run(
@@ -47,14 +56,13 @@ def ensure_calendar_running():
     )
     if result.stdout.strip().lower() != "true":
         subprocess.run(["open", "-a", "Calendar"])
-        import time; time.sleep(3)
+        import time; time.sleep(5)
 
 
 def get_active_events() -> list[tuple[str, str, str, int]]:
     """Return [(title, platform, url, secs_since_start)] for active meetings."""
     before_secs = ALERT_BEFORE_MINUTES * 60
     grace_secs = GRACE_PERIOD_MINUTES * 60
-    platform_keywords = "meet.google.com\" or rawData contains \"zoom.us\" or rawData contains \"teams.microsoft.com"
     script = f"""
 set output to ""
 set now to current date
@@ -76,7 +84,7 @@ tell application "Calendar"
                 try
                     set rawData to rawData & (description of ev) & " "
                 end try
-                if rawData contains "{platform_keywords} then
+                if rawData contains "meet.google.com" or rawData contains "zoom.us" or rawData contains "teams.microsoft.com" then
                     set secsSinceStart to (now - start date of ev) as integer
                     set output to output & evTitle & "|||" & rawData & "|||" & secsSinceStart & "~~"
                 end if
@@ -89,7 +97,11 @@ return output
     ensure_calendar_running()
     output, code = osascript(script)
     if code != 0:
-        logging.error("Calendar AppleScript failed (code %d): %s", code, output)
+        logging.warning("Calendar query failed — relaunching Calendar and retrying")
+        relaunch_calendar()
+        output, code = osascript(script)
+    if code != 0:
+        logging.error("Calendar AppleScript failed after relaunch (code %d): %s", code, output)
         return []
     logging.info("Calendar query returned: %r", output[:300] if output else "(empty)")
 
