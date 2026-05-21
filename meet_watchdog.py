@@ -162,12 +162,16 @@ def time_context(secs_since_start: int) -> str:
     return f"started {mins} min ago" if mins > 0 else "just started"
 
 
+ALERT_SOUND = "/System/Library/Sounds/Sosumi.aiff"
+
+
 def notify(meeting_title: str, platform: str, secs_since_start: int):
     title = f"Join your {platform} call!"
     body = f"{meeting_title} — {time_context(secs_since_start)}"
     t = title.replace('"', '\\"')
     b = body.replace('"', '\\"')
-    osascript(f'display notification "{b}" with title "{t}" sound name "Sosumi"')
+    osascript(f'display notification "{b}" with title "{t}"')
+    subprocess.run(["afplay", ALERT_SOUND])
 
 
 def main():
