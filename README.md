@@ -19,7 +19,21 @@ A lightweight macOS background agent that detects when a video call is active on
 - macOS 12 or later
 - Python 3 (`python3 --version` to check — install via [python.org](https://python.org) or `brew install python3`)
 - Google Chrome
-- Google Calendar synced to the macOS Calendar app (System Settings → Internet Accounts)
+- Google Calendar synced to the macOS Calendar app (see setup steps below)
+
+## Syncing Google Calendar to macOS Calendar
+
+Meet Watchdog reads your meetings from macOS Calendar.app, so your Google Calendar must be synced to it. You do not need to use Calendar.app day-to-day — it just needs to run in the background as a data source.
+
+One-time setup:
+
+1. Open **System Settings → Internet Accounts**
+2. Click **Add Account** and select **Google**
+3. Sign in with your Google account
+4. Make sure **Calendars** is checked
+5. Click **Done**
+
+Calendar.app will now stay in sync with your Google Calendar automatically. The watchdog opens it in the background as needed — you do not need to keep it open yourself.
 
 ---
 
