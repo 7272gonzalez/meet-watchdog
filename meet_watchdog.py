@@ -200,7 +200,10 @@ def main():
         if entry == "attended":
             continue
 
-        if is_in_call(platform, url):
+        # Only check for Chrome tab after the meeting has started.
+        # Ignores the tab if the user opened the link early (e.g. to check details).
+        if secs_since_start >= 0 and is_in_call(platform, url):
+            logging.info("Detected in call: %s — marking as attended", title)
             state[url] = "attended"
             changed = True
             continue
