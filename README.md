@@ -82,9 +82,17 @@ Open `~/.meet_watchdog.py` in a text editor and adjust these constants near the 
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ALERT_BEFORE_MINUTES` | `2` | How many minutes before a meeting's start time to begin alerting |
+| `ALERT_BEFORE_MINUTES` | `0` | How many minutes before start time to begin alerting. `0` = alert exactly at start time, `2` = alert 2 minutes early, etc. |
 | `GRACE_PERIOD_MINUTES` | `15` | How many minutes after a meeting starts to keep watching it |
 | `MAX_ALERTS` | `3` | Maximum number of alert/open attempts per meeting before giving up |
+
+**When should I get alerted?**
+
+| `ALERT_BEFORE_MINUTES` | Behaviour |
+|---|---|
+| `0` | Alert fires exactly at the meeting start time ← default |
+| `2` | Alert fires 2 minutes before the meeting starts |
+| `5` | Alert fires 5 minutes before the meeting starts |
 
 Changes take effect on the next 60-second tick — no restart needed.
 
