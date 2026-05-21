@@ -22,7 +22,7 @@ logging.basicConfig(
 )
 
 STATE_FILE = os.path.expanduser("~/.meet_watchdog_state.json")
-ALERT_BEFORE_MINUTES = 2   # alert this many minutes before meeting starts
+ALERT_BEFORE_MINUTES = 0   # alert this many minutes before meeting starts (0 = alert at start time)
 GRACE_PERIOD_MINUTES = 15  # stop alerting this many minutes after start
 MAX_ALERTS = 3             # max alert attempts per meeting before giving up
 
